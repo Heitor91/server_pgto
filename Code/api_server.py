@@ -1,203 +1,98 @@
+from datetime import date
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import create_engine
+from sqlalchemy import BigInteger
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Double, Date, SmallInteger
-from sqlalchemy.orm import relationship
-from sqlalchemy.ext.declarative import declarative_base
 import requests
+from random import randrange
 
 app = Flask(__name__)
 
-# Configuração do banco de dados SQLite
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///debts.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Configurando o banco de dados MySQL
-engine = create_engine("mysql://root:heitor13@localhost/debts")
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql://root:heitor13@localhost/debts'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
-# Modelo de dados
-Base = declarative_base()
-
-class Usuario(Base):
-    __tablename__ = 'DBTS_USUARIO'
-    
-    id_usuario = Column('ID_USUARIO', Integer, primary_key=True)
-    nome = Column('NOME', String(200), nullable=False)
-    login = Column('LOGIN', String(20), nullable=False)
-    senha = Column('SENHA', String(20), nullable=False)
-    cpf = Column('CPF', String(11), nullable=False)
-    dt_cadastro = Column('DT_CADASTRO', DateTime, nullable=False)
-
-class Questionario(Base):
-    __tablename__ = 'DBTS_QUESTIONARIO'
-    
-    id_questionario = Column('ID_QUESTIONARIO', Integer, primary_key=True, autoincrement=True)
-    id_usuario = Column('ID_USUARIO', Integer, ForeignKey('DBTS_USUARIO.ID_USUARIO'), nullable=False)
-    dt_questionario = Column('DT_QUESTIONARIO', Date, nullable=False, server_default=func.current_date())
-    inv_poupanca = Column('INV_POUPANCA', SmallInteger, default=0)
-    inv_tit_publico = Column('INV_TIT_PUBLICO', SmallInteger, default=0)
-    inv_tit_captalizacao = Column('INV_TIT_CAPTALIZACAO', SmallInteger, default=0)
-    inv_consorcio = Column('INV_CONSORCIO', SmallInteger, default=0)
-    inv_fund_imobiliario = Column('INV_FUND_IMOBILIARIO', SmallInteger, default=0)
-    inv_fund_multimercado = Column('INV_FUND_MULTIMERCADO', SmallInteger, default=0)
-    inv_tesouro_diret = Column('INV_TESOURO_DIRET', SmallInteger, default=0)
-    inv_acoes = Column('INV_ACOES', SmallInteger, default=0)
-    ccred_ecommerce = Column('CCRED_ECOMMERCE', Integer, default=0)
-    ccred_transporte = Column('CCRED_TRNSPORTE', Integer, default=0)
-    ccred_delivery = Column('CCRED_DELIVERY', Integer, default=0)
-
-class Cartao(Base):
-    __tablename__ = 'DBTS_CARTOES'
-    
-    num_cartao = Column('NUM_CARTAO', Double, primary_key=True)
-    cpf = Column('CPF', String(11), nullable=False)
-    banco = Column('BANCO', String(100), nullable=False)
-    id_usuario = Column('ID_USUARIO', Integer, ForeignKey('DBTS_USUARIO.ID_USUARIO'), nullable=False)
-    tp_cartao = Column('TP_CARTAO', String(45), nullable=False)
-    fechamento_fat = Column('FECHAMENTO_FAT', DateTime)
-    limite = Column('LIMITE', Float)
-
-class Transacao(Base):
-    __tablename__ = 'DBTS_TRANSACOES'
-    
-    id_transacao = Column('ID_TRANSACAO', Integer, primary_key=True, autoincrement=True)
-    num_cartao = Column('NUM_CARTAO', Double, ForeignKey('DBTS_CARTOES.NUM_CARTAO'), nullable=False)
-    tp_pgto = Column('TP_PGTO', String(100), nullable=False)
-    ds_pgto = Column('DS_PGTO', String(100), nullable=False)
-    dt_pgto = Column('DT_PGTO', Date, nullable=False)
-    vlr_credito = Column('VLR_CREDITO', Float)
-    vlr_debito = Column('VLR_DEBITO', Float)
-    qtd_parcelas = Column('QTD_PARCELAS', Integer)
-
-class ContaCorrente(Base):
+class ContaCorrente(db.Model):
     __tablename__ = 'BNC_CONTACORRENTE'
     
-    id_trans = Column('ID_TRANS', Double, primary_key=True)
-    cod_cartao = Column('COD_CARTAO', Double, ForeignKey('BNC_CONTROLE_CARTOES.COD_CARTAO'), nullable=False)
+    id_trans = Column('ID_TRANS', BigInteger, primary_key=True)
+    cd_cartao = Column('CD_CARTAO', BigInteger, ForeignKey('BNC_CONTROLE_CARTOES.CD_CARTAO'), nullable=False)
     doc_transacao = Column('DOC_TRANSACAO', Double, nullable=False)
-    cpf_cliente = Column('CPF_CLIENTE', String(45), nullable=False)
-    dt_transacao = Column('DT_PGTO', Date, nullable=False)
+    cpf_titular = Column('CPF_CLIENTE', String(45), nullable=False)
+    dt_transacao = Column('DT_PGTO', Date, nullable=False, default=date.today)
     tp_trans = Column('TP_TRANS', String(100), nullable=False)
     ds_transacao = Column('DS_TRANSACAO', String(100), nullable=False)
     credito = Column('CREDITO', Float)
     debito = Column('DEBITO', Float)
     saldo = Column('SALDO', String(45), nullable=False)
 
-class CartaoCredito(Base):
+class CartaoCredito(db.Model):
     __tablename__ = 'BNC_CARTAOCREDITO'
     
-    id_trans = Column('ID_TRANS', Double, primary_key=True)
-    cod_cartao = Column('COD_CARTAO', Double, ForeignKey('BNC_CONTROLE_CARTOES.COD_CARTAO'), nullable=False)
-    dt_transacao = Column('DT_TRANSACAO', Date, nullable=False)
+    id_trans = Column('ID_TRANS', BigInteger, primary_key=True)
+    cd_cartao = Column('CD_CARTAO', BigInteger, ForeignKey('BNC_CONTROLE_CARTOES.CD_CARTAO'), nullable=False)
+    dt_transacao = Column('DT_TRANSACAO', Date, nullable=False, default=date.today)
     ds_transacao = Column('DS_TRANSACAO', String(100), nullable=False)
     parc_pgto = Column('PARC_PGTO', Integer, nullable=False)
-    cpf_cliente = Column('CPF_CLIENTE', String(11), nullable=False)
+    cpf_titular = Column('CPF_CLIENTE', String(11), nullable=False)
     vlr_total = Column('VLR_TOTAL', Float, nullable=False)
 
-class BaseCartoes(Base):
+class BaseCartoes(db.Model):
     __tablename__ = 'BNC_CONTROLE_CARTOES'
 
-    cd_cartao = Column('ID_TRANS', Double, primary_key=True)
-    hx_cartao = Column('COD_CARTAO', String(8), nullable=False)
-    ds_titular = Column('DS_TRANSACAO', String(100), nullable=False)
-    cpf_cliente = Column('CPF_CLIENTE', String(11), nullable=False)
-    tp_credito = Column('PARC_PGTO', SmallInteger, nullable=False)
-    tp_debito = Column('VLR_TOTAL', SmallInteger, nullable=False)
+    cd_cartao = Column('CD_CARTAO', BigInteger, primary_key=True)
+    hx_cartao = Column('HX_CARTAO', String(8), nullable=False)
+    ds_titular = Column('DS_TITULAR', String(100), nullable=False)
+    cpf_titular = Column('CPF_TITULAR', String(11), nullable=False)
+    cd_password = Column('CD_PASS', String(11), nullable=False)
+    ds_operadora = Column('DS_OPERADORA', String(11), nullable=False)
+    tp_credito = Column('TP_CREDITO', SmallInteger, nullable=False)
+    tp_debito = Column('TP_DEBITO', SmallInteger, nullable=False)
 
-
-#Bases SQLite
-"""class Cartao(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    cartao_id = db.Column(db.String(80), nullable=False)
-    nome_tit = db.Column(db.String(120), nullable=False)
-    tp_cartao = db.Column(db.String(10), nullable=False)
-
-    def __init__(self, cartao_id, nome_tit, tp_cartao):
-        self.cartao_id = cartao_id
-        self.nome_tit = nome_tit
-        self.tp_cartao = tp_cartao
-
-class Pagamentos(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    cartao_id = db.Column(db.String(80), nullable=False)
-    valor = db.Column(db.Float, nullable=False)
-    tp_pgto = db.Column(db.String(10), nullable=False)
-    def __init__(self, cartao_id, valor, tp_pgto):
-        self.cartao_id = cartao_id
-        self.valor = valor
-        self.tp_pgto =tp_pgto"""
 
 # Criação das tabelas
 with app.app_context():
     db.create_all()
 
-@app.route('/pagamento', methods=['POST'])
-def pagamento():
-    print('PROCESSANDO PAGAMENTO')
-    dados = request.get_json()
-    if not dados:
-        print('Nenhum dado recebido')
-        return jsonify({'erro': 'Nenhum dado recebido'}), 400
-    
-    cartao_id = dados.get('id_cartao')
-    valor = dados.get('valor')
-    operacao = dados.get('tp_cartao')
-
-    print(f'Cartão: {cartao_id}/Valor: {valor}/ operação: {operacao}')
-
-    if not cartao_id or not valor or not operacao:
-        print('Dados incompletos')
-        return jsonify({'erro': 'Dados incompletos'}), 400
-    
-    validador = requests.post('http://localhost:5001/verificar_cartao',json={'id_cartao': cartao_id})
-    if validador.json().get('valido'):
-        novo_pgto = Pagamentos(cartao_id=cartao_id, valor=valor, tp_pgto=operacao)
-        db.session.add(novo_pgto)
-        db.session.commit()
-        return jsonify({'mensagem': 'Pagamento registrado com sucesso'}), 201
-    else:
-        print('Cartão não registrado, operação cancelada')
-        return jsonify({'mensagem': 'Cartão não registrado, operação cancelada'}), 221
-
-# Rota para receber os dados via POST
+#====================================================================================================================
+#  Endpoint para cadastrar cartao
 @app.route('/cadastra_cc', methods=['POST'])
 def cadastra_cartao():
     print('CADASTRO SOLICITADO')
-    dados = request.get_json()
+    dados = request.get_json()['dados']
+    print(dados)
     if not dados:
-        print('Nenhum dado recebido')
+        print('Nenhum dado recebido ou dados')
         return jsonify({'erro': 'Nenhum dado recebido'}), 400
 
-    cartao_id = dados.get('id_cartao')
-    titular = dados.get('nome_titular')
-    operacao = dados.get('tp_cartao')
-
-    if not cartao_id or not titular or not operacao:
+    if len(dados) != 8:
         print('Dados incompletos')
         return jsonify({'erro': 'Dados incompletos'}), 400
     
-    validador = requests.post('http://localhost:5001/verificar_cartao',json={'id_cartao': cartao_id})
+    validador = requests.post('http://localhost:5001/verificar_cartao',json={'cd_cartao': dados['cd_cartao']})
     if validador.json().get('valido'):
         print('Cartão já registrado, operação cancelada')
         return jsonify({'mensagem': 'Cartão já registrado, operação cancelada'}), 220
     else:
-        novo_cartao = Cartao(cartao_id=cartao_id, nome_tit=titular, tp_cartao=operacao)
+        novo_cartao = BaseCartoes(**dados)
         db.session.add(novo_cartao)
         db.session.commit()
         print('Cartão registrado com sucesso')
         return jsonify({'mensagem': 'Cartão registrado com sucesso'}), 201
 
-# Endpoint para verificar se o cartão é válido
+# Endpoint para verificar se o cartão é vjá está na base ou não
 @app.route('/verificar_cartao', methods=['POST'])
 def verificar_cartao():
     dados = request.get_json()
-    if 'id_cartao' not in dados:
-        return jsonify({'erro': 'ID do cartão não foi enviado'}), 400
-
-    id_cartao = dados['id_cartao']
+    if 'dados' in dados:
+        dados = dados['dados']
+    print(dados)
+    if 'cd_cartao' not in dados:
+        return jsonify({'erro': 'Numero do cartão não foi enviado'}), 400
 
     # Verificar se o cartão está registrado e ativo
-    cartao = Cartao.query.filter_by(cartao_id=id_cartao).first()
+    cartao = BaseCartoes.query.filter_by(cd_cartao=dados['cd_cartao']).first()
 
     if cartao:
         print('Cartão válido')
@@ -205,6 +100,65 @@ def verificar_cartao():
     else:
         print('Cartão não encontrado ou inativo')
         return jsonify({'valido': False, 'mensagem': 'Cartão não encontrado ou inativo'}), 404
+
+@app.route('/valida_senha', methods=['POST'])
+def valida_senha():
+    dados = request.get_json()
+    if 'cd_cartao' not in dados["dados_pgto"] and 'cd_password' not in dados['dados_pgto']:
+        return jsonify({'erro': 'ID do cartão não foi enviado'}), 400
+    cartao = BaseCartoes.query.filter_by(cd_cartao=dados['dados_pgto']['cd_cartao']).first()
+    print(dados['dados_pgto']['cd_password'])
+    print(cartao.cd_password)
+    if (dados['dados_pgto']['cd_password'] == cartao.cd_password):
+        return jsonify({'valido': True, 'mensagem': 'Cartão válido'}), 201
+    else:
+        return jsonify({'erro': 'Método de pagamento inválido'}), 400
+
+@app.route('/valida_pgto', methods=['POST'])
+def valida_pgto():
+    dados = request.get_json()
+    campos = ['cd_cartao', 'tp_credito', 'tp_credito'] 
+    if not all(chave in dados['dados_pgto'] for chave in campos):
+        return jsonify({'erro': 'Campo faltante'}), 400 
+    
+    cartao = BaseCartoes.query.filter_by(cd_cartao=dados['dados_pgto']['cd_cartao']).first()
+    
+    if (dados['dados_pgto']['tp_credito'] and cartao.tp_credito) or (dados['dados_pgto']['tp_debito'] and cartao.tp_debito):
+        return jsonify({'valido': True, 'mensagem': 'Cartão válido'}), 201
+    else:
+        return jsonify({'erro': 'Método de pagamento inválido'}), 400
+
+@app.route('/insere_pgto', methods=['POST'])
+def insere_pgto():
+    dados = request.get_json()
+    dados_trans = dados['dados_pgto']
+    dados_cartao = BaseCartoes.query.filter_by(cd_cartao=dados['dados_pgto']['cd_cartao']).first().__dict__
+    campos={'campos_conta':['cd_cartao','doc_transacao','cpf_titular','tp_trans','ds_transacao','credito','debito','saldo'],
+    'campos_cred':['cd_cartao','ds_transacao','parc_pgto','cpf_titular','vlr_total']}
+    tp_pgto = None
+    if dados_trans['tp_credito']:
+        tp_pgto = 'campos_cred'
+    else:
+        dados['dados_pgto']['debito'] = dados['dados_pgto']['vlr_total']
+        dados['dados_pgto']['doc_transacao'] = randrange(1,9999999)
+        dados['dados_pgto']['credito'] = 0
+        dados['dados_pgto']['saldo'] = 0
+        tp_pgto = 'campos_conta'
+    dados_pgto = {}
+    for campo in campos[tp_pgto]:
+        print(campo)
+        if campo in dados_trans.keys():
+            dados_pgto[campo] = dados_trans.get(campo)
+        elif campo in dados_cartao.keys():
+            dados_pgto[campo] = dados_cartao.get(campo)
+    if dados_trans['tp_credito']:
+        novo_cartao = CartaoCredito(**dados_pgto)
+    elif dados_trans['tp_debito']:
+        novo_cartao = ContaCorrente(**dados_pgto)
+    db.session.add(novo_cartao)
+    db.session.commit()
+    print('Cartão registrado com sucesso')
+    return jsonify({'mensagem': 'Pagamento registrado com sucesso'}), 201
 
 if __name__ == '__main__':
     app.run(port=5001)

@@ -3,6 +3,7 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <Keypad.h>
+#include <ArduinoJson.h>
 
 //-----------------------------------------------------------------------------------------------------------------------------------
 //Constantes e variáveis globais do programa-----------------------------------------------------------------------------------------
@@ -14,22 +15,47 @@
 const byte numLinhas = 4; //Quantidade de linhas do teclado
 const byte numColunas = 4; //Quantidade de colunas do teclado
 
+String dadosCadastro = "";
+String dadosPagamento = "";
 String comando = "";
-String ref_1 = "";
-String ref_2 = "";
+bool api_on = false;
+String ref_1 = ""; //texto de referencia para a linha 1 do display
+String ref_2 = ""; //texto de referencia para a linha 1 do display
 float valor = 0;
 char teclasMatriz[numLinhas][numColunas] = {
   {'1', '2', '3', 'A'},
-  {'4', '6', '6', 'B'},
+  {'4', '5', '6', 'B'},
   {'7', '8', '9', 'C'},
   {'*', '0', '#', 'D'}
 };
-
 byte pinosLinhas[numLinhas] = {5, 4, 3, 2}; //Pinos das linhas
 byte pinosColunas[numColunas] = {9, 8, 7, 6}; //Pinos das Colunas
 Keypad meuteclado = Keypad(makeKeymap(teclasMatriz), pinosLinhas, pinosColunas, numLinhas, numColunas);
 MFRC522 mfrc522(SS_PIN, RST_PIN);   // Cria a instância MFRC522
 LiquidCrystal_I2C lcd(ende,col,lin); // Chamada da funcação LiquidCrystal para ser usada com o I2C
+
+
+//-----------------------------------------------------------------------------------------------------------------------------------
+// Métodos de controle das etapas de pagamento a partir da maquininha----------------------------------------------------------------
+/*typedef bool (*CPM)();
+CPM metodos[] = {cpmFormaPagamento, cpmValorPagamento, cpmLeituraCartao, cpmLeituraSenha, cpmFaturaPagamento};
+
+//Métodos slaves
+bool cpmFormaPagamento(){}
+bool cpmValorPagamento(){}
+bool cpmLeituraCartao(){}
+bool cpmLeituraSenha(){}
+bool cpmFaturaPagamento(){}
+
+//Método mestre
+void cpmCicloPagamentoMaquininha(){
+  for (int i = 0; i < 5; i++) {
+    if (!metodos[i]()) {
+      
+      break;  // Interrompe o ciclo se o método retornar false
+    }
+  }
+}*/
 
 //-----------------------------------------------------------------------------------------------------------------------------------
 //Método para leitura do cartão retorna uma string com ID do cartão------------------------------------------------------------------
@@ -47,27 +73,57 @@ String lerCartao(){
     delay(1000);
   }
 }
-String getRFID() {
-  String content = "";
-  for (byte i = 0; i < mfrc522.uid.size; i++) {
-    content.concat(String(mfrc522.uid.uidByte[i] < 0x10 ? "0" : ""));
-    content.concat(String(mfrc522.uid.uidByte[i], HEX));
+
+//Método que recebe dados pelo serial da API=======================================================================================
+bool apiSerial(){
+  String cartao;
+  while(true){
+    if(Serial.available() > 0){
+      comando = Serial.readStringUntil('\n');
+      break;
+    }
   }
-  content.toUpperCase();  // Transformar em maiúsculas para consistência
-  return content;
+  if (comando == "CADASTRAR_CARTAO"){
+    display("APROX. O CARTAO", " PARA CADASTRO");
+    cartao = lerCartao();
+    dadosCadastro = "{\"hx_cartao\":\"" + cartao + "\"}";
+    serialApi(dadosCadastro);
+    display("CADASTRANDO", cartao);
+    return true;
+  }
+  else if (comando.startsWith("EXIBIR_VALOR")){
+    String valor = comando.substring(12);
+    display("Valor: " + valor, "Aproxime o cartao");
+    cartao = lerCartao();
+    display("Processando", cartao);
+    dadosPagamento = "{\"hx_cartao\":\"" + cartao + "\"}";
+    serialApi(dadosPagamento);
+    return true;
+  }
+  else if(comando == "SUCESSO"){
+    api_on = false;
+    return true;
+  }
+  else if(comando == "ERRO"){
+    api_on = false;
+    return false;
+  }
 }
 
+//==================================================================================================================================
+//=====================================                 SETUP                             ==========================================
 //==================================================================================================================================
 void setup() {  
   lcd.init(); // Serve para iniciar a comunicação com o display já conectado
   lcd.backlight(); // Serve para ligar a luz do display
   lcd.clear(); // Serve para limpar a tela do display
-
   Serial.begin(9600);   // Inicia a comunicação serial
   SPI.begin();          // Inicia SPI bus
   mfrc522.PCD_Init();   // Inicia o MFRC522
 }
 
+//==================================================================================================================================
+//=====================================                   LOOP                             =========================================
 //==================================================================================================================================
 void loop() {
   display("DEBTS Pag", "#->p/ pagamento ");
@@ -75,29 +131,53 @@ void loop() {
   if (pressionado == '#') { //Se alguma tecla foi pressionada
     acionamentoLocal();
   }
-  if(Serial.available() > 0){
-    apiSerial();
-  }
+  do{
+    if(Serial.available() > 0){
+      api_on = apiSerial();
+    }
+  }while(api_on);
 }
 
 //==================================================================================================================================
 //Métodos complementares============================================================================================================
-
-//método de inserção de pagamento pela maquininha
 void acionamentoLocal(){
+  dadosPagamento = dadosPagamento + "{\"tp_pagamento\":";
   while(true){
     display("Forma de pgto :", "A-Credto B-Debto");
-    char pressionado = meuteclado.getKey();
-    if ((pressionado == 'A') || (pressionado == 'B')) {
-      display("Valor: 0,00", "Apag|Canc|D-Prox");
-      acionamentoValor(pressionado);
+    char forma_pgto = meuteclado.getKey();
+    String parcelas = "";
+    if(forma_pgto == 'A'){
+      dadosPagamento = dadosPagamento + "1,";
+      display("Parcelas:","Apag|Canc|D-Prox");
+      lcd.setCursor(10, 0);
+      while(true){
+        char tecla = meuteclado.getKey();
+        //preenchimento da senha
+        if (isDigit(tecla) && (parcelas == "" || parcelas == "1")){
+          parcelas = parcelas + tecla;
+          lcd.print(tecla);
+        }
+        else if(tecla == 'C'){
+          display("Operacao", "Cancelada");
+          return;
+        }
+        else if(tecla == 'D' && parcelas != ""){
+          dadosPagamento = dadosPagamento + "\"parcelas\":" + parcelas + ",";
+          break;
+        }
+      }
+      break;
+    }
+    else if(forma_pgto == 'B'){
+      dadosPagamento = dadosPagamento + "2,";
       break;
     }
   }
+  acionamentoValor();
 }
 
 //Rotina de pagamento
-void acionamentoValor(char op){
+void acionamentoValor(){
   float valor = 0 ;
   long centavos = 0;
   String valorStr;
@@ -111,34 +191,6 @@ void acionamentoValor(char op){
       centavos = (centavos * 10) + digito;
       valor = centavos/100.0; 
     }
-    //Avanço de tela
-    else if(tecla == 'D' && valor > 1){
-      String cartao;
-      display("APROXIME O","CARTAO....");
-      //Loop de leitura de cartão
-      cartao = lerCartao()
-      while(true){
-        if(mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()){
-          cartao = getRFID();
-          break;
-        }
-        delay(1000);
-      }
-      /*
-      EFETUAR PROCESSO DE VALIDAÇÃO DO CARTÃO no banco de dados
-      */
-      //Validação da senha
-      if(inserirSenha(valorStr, cartao, op)){
-        display("Pagamento","Aprovado");
-        delay(3000);
-        break;
-      }
-      else{
-        display("Pagamento","Cancelado");
-        delay(3000);
-        break;
-      }
-    }
     //Reseta valor
     else if (tecla == 'A' && valor > 0){
       valor = 0;
@@ -150,13 +202,41 @@ void acionamentoValor(char op){
       delay(1000);
       break;
     }
+    //Avanço de tela
+    else if(tecla == 'D' && valor > 1){
+      dadosPagamento = dadosPagamento + "\"valor\":" + valorStr + ",";
+      String cartao;
+      display("APROXIME O","CARTAO....");
+      cartao = lerCartao();
+      dadosPagamento = dadosPagamento + "\"hx_cartao\":\"" + cartao + "\"}";
+      display("VALIDANDO","CARTAO....");
+      serialApi(dadosPagamento);
+      if(apiSerial()){
+        //Validação da senha
+        if(inserirSenha(valorStr)){
+          display("Pagamento","Aprovado");
+          delay(3000);
+          return;
+        }
+        else{
+          display("SENHA INVALIDA","OPER. CANCELADA");
+          delay(3000);
+          return;
+        }
+      }
+      else{
+        display("CARTAO INVALIDO","OPER. CANCELADA");
+        dadosPagamento = "";
+        return;
+      }
+    }
   }
 }
 
 /*Fluxo de digitar a senha*/
-boolean inserirSenha(String valor,String cartao,char op){
+bool inserirSenha(String valorStr){
   String senha = "";
-  display("Valor: " + valor, "senha:");
+  display("Valor: " + valorStr, "senha:");
   lcd.setCursor(6, 1);
   //Loop para usuário digiar a senha
   while(true){
@@ -169,27 +249,24 @@ boolean inserirSenha(String valor,String cartao,char op){
     //libera dados para API
     else if((tecla == 'D') && (senha.length() > 1)){
       display("Processando", "Aguarde...");
-      serialApi(cartao + "@" + op + "@" + valor + "@" + senha);
-      while (true){
-        if(Serial.available() > 0){
-          comando = Serial.readStringUntil('\n');
-          if (comando == "SUCESSO"){
-            return true;
-          }
-          else{
-            return false;
-          }
-        }
+      dadosPagamento.replace("}", ",");
+      dadosPagamento = dadosPagamento + "\"pass\":\"" + senha + "\"}";
+      serialApi(dadosPagamento);
+      if(apiSerial()){
+        dadosPagamento="";
+        return true;
       }
+      else
+        return false;
     }
     //Apaga senha digitada e permite tentar de novo
-    else if(tecla == 'C'){
+    else if(tecla == 'A'){
       senha = "";
-      display("Valor: " + valor, "senha:          ");
+      display("Valor: " + valorStr, "senha:          ");
       lcd.setCursor(6, 1);
     }
     //Cancela a operação
-    else if(tecla == 'A'){
+    else if(tecla == 'C'){
       return false;
     }
   }
@@ -208,67 +285,7 @@ void display(String linha1, String linha2){
 }
 
 //Método que envia dados pelo serial para a API=====================================================================================
-void serialApi(String serial_txt) {
-  Serial.println(serial_txt);
-  delay(2000);
-}
-
-
-//Método que recebe dados pelo serial da API=======================================================================================
-void apiSerial(){
-  comando = Serial.readStringUntil('\n');
-  if (comando == "CADASTRAR_CARTAO"){
-    display("APROX. O CARTAO", " PARA CADASTRO");
-    while(true){
-      if(mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()){
-        serialApi(getRFID());
-        break;
-      }
-      delay(1000);
-    }
-    display("CADASTRANDO","Aguarde");
-    while (true){
-      if(Serial.available() > 0){
-        comando = Serial.readStringUntil('\n');
-        delay(2000);
-        if (comando == "SUCESSO"){
-          display("Cadastro","finalizado");
-          delay(3000);
-          break;
-        }
-        else{
-          display("Cadastro","Cancelado");
-          delay(3000);
-          break;
-        }
-      }
-    }
-  }
-  else if (comando.startsWith("EXIBIR_VALOR")){
-    String valor = comando.substring(12);
-    display("Valor: " + valor, "Aproxime o cartão");
-    while (true){
-      if(mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()){
-        serialApi(getRFID());
-        break;
-      }
-    }
-    display("Processando", "-----------");
-    while (true){
-      if(Serial.available() > 0){
-        comando = Serial.readStringUntil('\n');
-        delay(2000);
-        if (comando == "SUCESSO"){
-          display("Pagamento","Aprovado");
-          delay(3000);
-          break;
-        }
-        else{
-          display("Pagamento","Cancelado");
-          delay(3000);
-          break;
-        }
-      }
-    }
-  }
+void serialApi(String dados) {
+  Serial.println(dados);
+  delay(1000);
 }

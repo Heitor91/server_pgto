@@ -41,8 +41,96 @@ LiquidCrystal_I2C lcd(ende,col,lin); // Chamada da funcação LiquidCrystal para
 CPM metodos[] = {cpmFormaPagamento, cpmValorPagamento, cpmLeituraCartao, cpmLeituraSenha, cpmFaturaPagamento};
 
 //Métodos slaves
-bool cpmFormaPagamento(){}
-bool cpmValorPagamento(){}
+bool cpmFormaPagamento(){
+  dadosPagamento = "{\"tp_pagamento\":";
+  while(true){
+    display("Forma de pgto :", "A-Credto B-Debto");
+    char forma_pgto = meuteclado.getKey();
+    String parcelas = "";
+    if(forma_pgto == 'A'){
+      dadosPagamento = dadosPagamento + "1,";
+      display("Parcelas:","Apag|Canc|D-Prox");
+      lcd.setCursor(10, 0);
+      while(true){
+        char tecla = meuteclado.getKey();
+        //preenchimento da senha
+        if (isDigit(tecla) && (parcelas == "" || parcelas == "1")){
+          parcelas = parcelas + tecla;
+          lcd.print(tecla);
+        }
+        else if(tecla == 'C'){
+          display("Operacao", "Cancelada");
+          return;
+        }
+        else if(tecla == 'D' && parcelas != ""){
+          dadosPagamento = dadosPagamento + "\"parcelas\":" + parcelas + ",";
+          break;
+        }
+      }
+      break;
+    }
+    else if(forma_pgto == 'B'){
+      dadosPagamento = dadosPagamento + "2,";
+      break;
+    }
+  }
+}
+bool cpmValorPagamento(){
+  float valor = 0 ;
+  long centavos = 0;
+  String valorStr;
+  while(true){
+    String valorStr = String(valor, 2);
+    display("Valor: " + valorStr, "Apag|Canc|D-Prox");
+    char tecla = meuteclado.getKey();
+    //Tratamento do valor digitado
+    if (isDigit(tecla) && centavos < 100000){
+      int digito = tecla - '0';
+      centavos = (centavos * 10) + digito;
+      valor = centavos/100.0; 
+    }
+    //Reseta valor
+    else if (tecla == 'A' && valor > 0){
+      valor = 0;
+      centavos = 0;
+    }
+    //cacela operação
+    else if(tecla == 'C'){
+      display("Operacao", "Cancelada");
+      delay(1000);
+      break;
+    }
+    //Avanço de tela
+    else if(tecla == 'D' && valor > 1){
+      dadosPagamento = dadosPagamento + "\"valor\":" + valorStr + ",";
+      String cartao;
+      display("APROXIME O","CARTAO....");
+      cartao = lerCartao();
+      dadosPagamento = dadosPagamento + "\"hx_cartao\":\"" + cartao + "\"}";
+      display("VALIDANDO","CARTAO....");
+      serialApi(dadosPagamento);
+      if(apiSerial()){
+        //Validação da senha
+        return true;
+        if(inserirSenha(valorStr)){
+          display("Pagamento","Aprovado");
+          delay(3000);
+          return;
+        }
+        else{
+          display("SENHA INVALIDA","OPER. CANCELADA");
+          delay(3000);
+          return;
+        }
+      }
+      else{
+        display("CARTAO INVALIDO","OPER. CANCELADA");
+        dadosPagamento = "";
+        return;
+      }
+    }
+  }
+}
 bool cpmLeituraCartao(){}
 bool cpmLeituraSenha(){}
 bool cpmFaturaPagamento(){}
@@ -141,7 +229,7 @@ void loop() {
 //==================================================================================================================================
 //Métodos complementares============================================================================================================
 void acionamentoLocal(){
-  dadosPagamento = dadosPagamento + "{\"tp_pagamento\":";
+  dadosPagamento = "{\"tp_pagamento\":";
   while(true){
     display("Forma de pgto :", "A-Credto B-Debto");
     char forma_pgto = meuteclado.getKey();

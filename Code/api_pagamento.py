@@ -1,24 +1,100 @@
-import serial
-import requests
-import os
-import sys
 import time
-import msvcrt
+import serial
+import serial.tools.list_ports
+import requests
+import signal
+import sys
+import os
 import hashlib
 import json
+from flask import Flask, request, jsonify
+from signalrcore.hub_connection_builder import HubConnectionBuilder
+from threading import Thread, Event
 
-#====================================================================================================================
-#                   Variáveis Globais
-#====================================================================================================================
-ser = serial.Serial('COM4', 9600)  # Use a porta correta
+
+"""_summary_
+Sequência de inicialização das conexões e dos métodos de encerramento seguro das conexões
+"""
+app = Flask(__name__)
+stop_event = Event()
+
+# Função para lidar com o sinal de interrupção (Ctrl+C)
+def signal_handler(sig, frame):
+    print("Encerrando a aplicação...") 
+    stop_event.set
+    if 'ser' in globals() and ser is not None and ser.is_open: 
+        ser.close()
+    flask_thread.join()
+    sys.exit(0)
+
+# Registrar o sinal de interrupção
+signal.signal(signal.SIGINT, signal_handler)
+
+def start_flask():
+    app.run(host='localhost', port=5002, debug=True, use_reloader=False)
+
+def close_existing_connections():
+    ports = serial.tools.list_ports.comports()
+    for port in ports:
+        if port.device == 'COM4':
+            try:
+                existing_serial = serial.Serial(port.device)
+                existing_serial.close()
+                print(f"Porta {port.device} fechada com sucesso.")
+            except Exception as e:
+                print(f"Erro ao fechar a porta {port.device}: {e}")
+
 API_2_URL = 'http://localhost:5001/'
 modelo = {1:["Crédito", True, False], 2:["Débito", False, True], 3:["Déb/Créd", True, True]}
+start_pgto_erp = True
+encerrar = False
+
+
+# Configure as opções de SSL para ignorar a verificação de certificado
+requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
+
+hub_connection = HubConnectionBuilder().with_url("https://localhost:7246/signalrhub", options={ 
+    "verify_ssl": False # Ignorar a verificação de certificado
+}).build()
+# Funções de evento e início da conexão
+hub_connection.on_open(lambda: print("Conexão estabelecida com sucesso")) 
+hub_connection.on_close(lambda: print("Conexão fechada")) 
+hub_connection.on_error(lambda data: print(f"Erro: {data}"))
+
+hub_connection.start()
+
+def main():
+    close_existing_connections()
+    for i in range(10):
+        print(f'Tentativa {i+1} de conexão serial: PORT=COM4, BAUD(9600)')
+        try:
+            global ser 
+            ser = serial.Serial('COM4', 9600)
+            print("Porta COM4 aberta com sucesso") 
+            break 
+        except serial.SerialException as e:
+            print(f"Erro ao abrir a porta COM4: {e}") 
+            if 'ser' in locals() and ser.is_open:
+                ser.close() 
+        time.sleep(3) 
+    if ser.is_open: 
+        print("Serial está disponível e aberta.")
+        global flask_thread
+        flask_thread = Thread(target=start_flask)
+        flask_thread.start()
+        # Manter a thread principal ativa para capturar Ctrl+C 
+        try: 
+            while True: 
+                time.sleep(1) 
+        except KeyboardInterrupt:
+            signal_handler(None, None)
+    else: 
+        print("Não foi possível abrir a porta serial após várias tentativas.")
 
 
 
-#====================================================================================================================
 #                   Classes
-#====================================================================================================================
+
 class DadosCadastro():
     def __init__(self, hx_cartao):
         self.cd_cartao = hash_cartao(hx_cartao)
@@ -115,13 +191,54 @@ class DadosPagamento():
         self.tp_debito = None
         self.parc_pgto = None
         self.cd_password = None
-    def ciclo_pagamento(self):
+    def inicio_pgto_erp(self, dados):
+        try:
+            self.vlr_total = dados['Valor']
+            self.tp_credito = True if dados['tp_pgto'] == 'Crédito' else False
+            self.tp_debito = True if dados['tp_pgto'] == 'Débito' else False
+            self.ds_transacao = dados['Empresa']
+            self.parc_pgto = dados['Parcelas'] if 'Parcelas' in dados else None
+            return "Dados recebidos, solicitando cartão", True
+        except:
+            return "Erro ao atribuir valores", False
+
+    def cartao_pgto_check(self, dados):
+        if type(dados) is not dict:
+            return dados, False
+        try:
+            self.cd_cartao = hash_cartao(id_rfid_hex=dados['hx_cartao'])
+            resposta = enviar_para_api_2(rota='verificar_cartao', cd_cartao=self.cd_cartao)
+            if not resposta['Sucesso']:
+                return resposta['msg'] if 'msg' in resposta else resposta['dados']['msg'], False
+            dados = resposta['dados']
+            if ((self.tp_credito and dados['tp_credito']) or (self.tp_debito and dados['tp_debito'])):
+                return "Cartão validado", True
+            return "Modo de pagamento inválido", False
+        except:
+            return "Erro na leitura do cartão", False    
+        
+    def senha_pgto_check(self, dados):
+        if type(dados) is not dict:
+            return dados, False
+        try:
+            self.cd_password = dados['pass']
+            resposta = enviar_para_api_2(rota='valida_senha', 
+                                         cd_cartao=self.cd_cartao, 
+                                         cd_password=self.cd_password)
+            if not resposta['Sucesso']:
+                return resposta['msg'] if 'msg' in resposta else resposta['dados']['msg'], False
+            return "Pagamento aprovado", True
+        except:
+            return "Erro na leitura da senha", False
+
+    def ciclo_pgto_maq(self):
+
         self.entrada_modo_pagamento()
         self.entrada_valor()
         if self.check_pagamento():
             self.check_senha()
         else:
-            send_serial_cmd("CANCELADO")
+            envia_serial("CANCELADO")
     def entrada_modo_pagamento(self):
         while True:
             tp_cartao = input("Selecione o tipo de pagamento:\n1-Crédito\n2-Débito")
@@ -154,8 +271,8 @@ class DadosPagamento():
             confirma = input(f'Confirme os dados:\nPagamento: {"Crédito" if (self.tp_credito and not self.tp_debito) else "Débito"}\nValor: {self.valor}\nParcelas: {self.parc_pgto}\nS-SIM \ N-NÃO >>')
             if confirma.upper() == 'S':
                 print("Aguardando cartão...")
-                send_serial_cmd('EXIBIR_VALOR', valor=self.valor)
-                self.cd_cartao = hash_cartao(monitorar_serial(origem='cad_cartao'))
+                envia_serial('EXIBIR_VALOR', valor=self.valor)
+                self.cd_cartao = hash_cartao(ler_serial(origem='cad_cartao'))
 
                 if enviar_para_api_2(rota='valida_pgto', dados={'cd_cartao':self.cd_cartao,
                                                                      'tp_pgto':'TP_CREDITO' if self.tp_credito  else 'TP_DEBITO'}): # rever na api2
@@ -164,12 +281,12 @@ class DadosPagamento():
                     return False
             elif confirma.upper() == 'N':
                 print('cadastro cancelado')
-                send_serial_cmd("CANCELADO")
+                envia_serial("CANCELADO")
                 return False
             else:
                 print('opção inválida')
     def check_senha(self):
-        self.senha = send_serial_cmd(comando='SOLICITA_SENHA',valor=self.valor).split('@')[2]
+        self.senha = envia_serial(comando='SOLICITA_SENHA',valor=self.valor).split('@')[2]
         enviar_para_api_2(rota='verificar_senha', dados={'cd_cartao':self.cd_cartao,
                                                          'senha':self.senha})
     def pagamento_maquininha(self,dados_maq):
@@ -183,10 +300,7 @@ class DadosPagamento():
         self.cd_password = dados_maq["pass"]
 
 
-#====================================================================================================================
-#                  Métodos
-#====================================================================================================================
-
+#           Métodos de processamento
 def hash_cartao(id_rfid_hex):
     """_summary_
 
@@ -208,214 +322,149 @@ def cadastra_cartao():
     """_summary_
     """
     print("Aguardando cartão...")
-    send_serial_cmd("\nCADASTRAR_CARTAO")
-    cartao = monitorar_serial(origem='cad_cartao')
+    envia_serial("\nCADASTRAR_CARTAO")
+    cartao = ler_serial(origem='cad_cartao')
     NovoCadastro = DadosCadastro(cartao)
     os.system('cls')
     if NovoCadastro.ciclo_cadastro():
         enviar_para_api_2(rota='cadastra_cc',dados=NovoCadastro.__dict__)
-        send_serial_cmd("SUCESSO")
+        envia_serial("SUCESSO")
     else:
         print('cadastro cancelado')
-        send_serial_cmd("CANCELADO")
+        envia_serial("CANCELADO")
     
-def pagamento():
-    os.system('cls')
-    NovoPagamento = DadosPagamento()
-    NovoPagamento.ciclo_pagamento()
-    enviar_para_api_2(rota='pagamento',dados=NovoPagamento.__dict__)
-
 def ciclo_maquininha(data_dict, etapa):
     if etapa == 1:
         data_api = {"cd_cartao":hash_cartao(data_dict.get('hx_cartao')),
                     'tp_credito':modelo[data_dict.get('tp_pagamento')][1],
                     'tp_debito':modelo[data_dict.get('tp_pagamento')][2]}
         if enviar_para_api_2(rota='valida_pgto', dados_pgto=data_api):
-            send_serial_cmd('SUCESSO')
+            envia_serial('SUCESSO')
             return True
         else:
-            send_serial_cmd('erro')
+            envia_serial('erro')
             return False
     elif etapa == 2:
         data_api = {"cd_cartao":hash_cartao(data_dict.get('hx_cartao')),
                     'cd_password':data_dict.get('pass')}
         if enviar_para_api_2(rota='valida_senha', dados_pgto=data_api):
-            send_serial_cmd('SUCESSO')
+            envia_serial('SUCESSO')
             etapa = 3
         else:
-            send_serial_cmd('erro')
+            envia_serial('erro')
             return False
     if etapa == 3:
         NovoPagamento = DadosPagamento()
         print(data_dict)
         NovoPagamento.pagamento_maquininha(data_dict)
         if enviar_para_api_2(rota='insere_pgto', dados_pgto=NovoPagamento.__dict__):
-            send_serial_cmd('SUCESSO')
+            envia_serial('SUCESSO')
             etapa = 3
         else:
-            send_serial_cmd('erro')
+            envia_serial('erro')
             return False
 
-def send_serial_cmd(comando, valor=0):
-    if comando in ['EXIBIR_VALOR','SOLICITA_SENHA']:
+def enviar_para_api_2(rota, **dados):
+    """_summary_
+    Function que realiza as requests para a api_financeira.py.
+
+    Args:
+        rota (str): _description_
+
+    Returns:
+        _type_: _description_
+    """
+    rota = API_2_URL + rota
+    try:
+        response = requests.post(rota, json=dados) # Faz a requisição POST para a API SERVER
+        # Verifica o status da resposta
+        if response.status_code == 200:
+            return {'Sucesso':True, 'code':response.status_code, 'dados':response.json()}
+        return {'Sucesso':False, 'code':response.status_code, 'dados':response.json()}
+    except requests.exceptions.RequestException as e:
+        return {'Sucesso':False, 
+                'code':getattr(e.response, 'status_code', 'Sem código de status'), 
+                'msg':str(e)}
+   
+#Método para processar variáveis JSON
+def processar_json(json_string):
+    try:
+        return json.loads(json_string)
+    except json.JSONDecodeError:
+        return f"Erro ao decodificar: {json_string}"
+
+# Métodos de interação com a serial port
+def envia_serial(comando, valor=0):
+    if comando in ['CARTAO_','SOLICITA_SENHA']:
         comando = comando + str(valor)
     ser.write(comando.encode())  # Envia o comando para o Arduino
     if comando in ['SUCESSO', 'ERRO']:
         return
 
-def enviar_para_api_2(**dados):
-    print('Preparando dados...')
-    if dados['rota'] == 'cadastra_cc':
-        rota = API_2_URL + dados['rota']
-        try:
-            print('Enviando dados')
-            
-            response = requests.post(rota, json=dados) # Faz a requisição POST para a API SERVER
-            # Verifica o status da resposta
-            if response.status_code == 201:
-                resultado = response.json()
-                print(f">>: {resultado['mensagem']}")
-            else:
-                erro = response.json().get('erro', 'Erro desconhecido')
-                print(f"Erro no cadastro:\n>>ERROR: {response.status_code} - {erro}")
-        except requests.exceptions.RequestException as e:
-            print(f"Erro ao se comunicar com a API do BD: {e}")
-    elif dados['rota'] == 'insere_pgto':
-        rota = API_2_URL + dados['rota']
-        print('Enviando dados')
-        try:
-            response = requests.post(rota, json=dados) # Faz a requisição POST para a API SERVER
-            # Verifica o status da resposta
-            if response.status_code == 201:
-                resultado = response.json()
-                print(f">>: {resultado['mensagem']}")
-            else:
-                erro = response.json().get('erro', 'Erro desconhecido')
-                print(f"Erro no cadastro:\n>>ERROR: {response.status_code} - {erro}")
-        except requests.exceptions.RequestException as e:
-            print(f"Erro ao se comunicar com a API do BD: {e}")
-    elif dados['rota'] == 'valida_pgto':
-        rota = API_2_URL + dados['rota']
-        print('Enviando dados')
-        try:
-            response = requests.post(rota, json=dados) # Faz a requisição POST para a API SERVER
-            # Verifica o status da resposta
-            if response.status_code == 201:
-                resultado = response.json()
-                print(f">>: {resultado['mensagem']}")
-                return True
-            else:
-                erro = response.json().get('erro', 'Erro desconhecido')
-                print(f"Erro no cadastro:\n>>ERROR: {response.status_code} - {erro}")
-                return False
-        except requests.exceptions.RequestException as e:
-            print(f"Erro ao se comunicar com a API do BD: {e}")
-    elif dados['rota'] == 'verificar_cartao':
-        rota = API_2_URL + dados['rota']
-        print('Enviando dados')
-        try:
-            response = requests.post(rota, json=dados) # Faz a requisição POST para a API SERVER
-            # Verifica o status da resposta
-            if response.status_code == 201:
-                resultado = response.json()
-                print(f">>: {resultado['mensagem']}")
-                return resultado.get('valido')
-            else:
-                erro = response.json().get('erro', 'Erro desconhecido')
-                print(f"Erro no cadastro:\n>>ERROR: {response.status_code} - {erro}")
-        except requests.exceptions.RequestException as e:
-            print(f"Erro ao se comunicar com a API do BD: {e}")
-    elif dados['rota'] == 'valida_senha':
-        rota = API_2_URL + dados['rota']
-        print('Enviando dados')
-        try:
-            response = requests.post(rota, json=dados) # Faz a requisição POST para a API SERVER
-            # Verifica o status da resposta
-            if response.status_code == 201:
-                resultado = response.json()
-                print(f">>: {resultado['mensagem']}")
-                return resultado.get('valido')
-            else:
-                erro = response.json().get('erro', 'Erro desconhecido')
-                print(f"Erro no cadastro:\n>>ERROR: {response.status_code} - {erro}")
-        except requests.exceptions.RequestException as e:
-            print(f"Erro ao se comunicar com a API do BD: {e}")
-    while True:
-        input('Dados enviados pressione Enter para continuar')
-        break
-
-def processar_json(json_string):
-    try:
-        return json.loads(json_string)
-        # Continue com o processamento dos dados...
-    except json.JSONDecodeError:
-        print(f"Erro ao decodificar: {json_string}")
-
-def monitorar_serial(origem):
+def ler_serial():
+    print('Lendo Serial......')
     while True:
         if ser.in_waiting > 0:
             dados = ser.readline().decode('utf-8').strip()
-            try:
-                data_dict = json.loads(dados)
-                print(data_dict)
-                print(type(data_dict))
-                if origem == 'cad_cartao':
-                    id_cartao = data_dict.get('hx_cartao')
-                    return id_cartao
-                elif origem == 'pag_mag':
-                    return data_dict
-                return
-            except json.JSONDecodeError:
-                print(f"Erro ao decodificar: {dados}")
-                return
+            return processar_json(dados)
+            
 
-def menu_cmd(op_erro):
-    os.system('cls')
-    if op_erro:
-        print("OPERAÇÃO INVÁLIDA\n")
-    print("Selecione a operação:\n1- Cadastro\n2- Compra\n0- Encerrar\nOperação:")
+#Métodos de interação com o ERP
+@app.route('/start_sys', methods=['POST'])
+def start_sys():
+    dados = ler_serial()
+    if "SYS" in dados and dados["SYS"] == "WAITING":
+        envia_serial(comando="START_ERP")
+    dados = ler_serial()
+    print(dados)
+    if "SYS" in dados:
+        if dados['SYS'] in ["ON_ERP", "ON_LOCAL"]:
+            return jsonify({'resp': 'Maquininha conectada com sucesso'}), 200
+        elif dados['SYS'] == "ERROR":
+            return jsonify({'resp': 'Requisição serial inapropriada ou com erro'}), 404
+    return  jsonify({'resp': 'Requisição não gerou resposta apropriada'}), 400
 
-def menu_gerenciamento(op):
-    try: 
-        operacao = int(op)
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({'resp': 'Comunicação com API [operacional]'}), 200
+
+#Método que usa a maquininha para realizar o procedimento físico mas com dados de faturamento pelo ERP
+@app.route('/fatura_maq', methods=['POST'])
+def fatura_maq():
+    #Transforma json em dicionário
+    try:
+        dados = request.get_json()
     except:
-        return True
-    if operacao == 1:
-        cadastra_cartao()
-        return False
-    elif operacao == 2:
-        pagamento()
-        return False
-    elif operacao == 0:
-        sys.exit(0)
-    else:
-        return True
+        return jsonify({"resp":"Dados corrompidos"})
+    
+    PagamentoMaquininha = DadosPagamento()
+    msg, status = PagamentoMaquininha.inicio_pgto_erp(dados=dados)
+    if not status:
+        return jsonify({"resp":msg}), 400
+    
+    hub_connection.send("SendMessage", [msg]) # TODO Verificar porque não atualiza 
+    
+    envia_serial(comando="CARTAO_", valor=dados['Valor'])
 
-def main():
-    ctrl_menu = False
-    while True:
-        menu_cmd(ctrl_menu)
-        while True:
-            if ser.in_waiting:
-                dados = monitorar_serial(origem='pag_mag')
-                os.system('cls')
-                print("RECEBENDO DADOS DE PAGAMENTO...")
-                print(dados)
-                on_ciclo = ciclo_maquininha(data_dict=dados, etapa=1)
-                if not on_ciclo:
-                    break
-                dados = monitorar_serial(origem='pag_mag')
-                print("VALIDANDO DADOS DE PAGAMENTO...")
-                on_ciclo = ciclo_maquininha(data_dict=dados, etapa=2)
-                if not on_ciclo:
-                    break
-                ctrl_menu = False
-                break
-            time.sleep(0.1)
-            if msvcrt.kbhit():
-                operacao = input()  # Recolhe a operação
-                ctrl_menu = menu_gerenciamento(operacao)
-                break
+    cartao = ler_serial()
+    print(cartao)
+    msg, status = PagamentoMaquininha.cartao_pgto_check(cartao)
+    print(status)
+    if not status:
+        return jsonify({"resp":msg}), 203
+    hub_connection.send("SendMessage", [msg])
+    envia_serial(comando="SOLICITA_SENHA")
+    msg, status = PagamentoMaquininha.senha_pgto_check(ler_serial())
+    if not status:
+        return jsonify({"resp":msg}), 203
+    
+    resposta = enviar_para_api_2(rota='/insere_pgto', **PagamentoMaquininha.__dict__)
+    if not resposta['Sucesso']:
+        return jsonify({'resp':resposta['msg'] if 'msg'in resposta else resposta['dados']}), 203
+    return jsonify({"resp":msg}), 200
+
+
+
 
 if __name__ == "__main__":
     main()

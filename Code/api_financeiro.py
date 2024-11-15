@@ -81,38 +81,96 @@ def cadastra_cartao():
         print('Cartão registrado com sucesso')
         return jsonify({'mensagem': 'Cartão registrado com sucesso'}), 201
 
-# Endpoint para verificar se o cartão é vjá está na base ou não
 @app.route('/verificar_cartao', methods=['POST'])
 def verificar_cartao():
-    dados = request.get_json()
-    if 'dados' in dados:
-        dados = dados['dados']
-    print(dados)
-    if 'cd_cartao' not in dados:
-        return jsonify({'erro': 'Numero do cartão não foi enviado'}), 400
+    """_summary_
+    Endpoint para verificar se um cartão está registrado na base de dados.
 
-    # Verificar se o cartão está registrado e ativo
+    Este endpoint recebe uma requisição POST com um JSON contendo o número do cartão
+    ('cd_cartao') e verifica se o cartão existe no banco de dados. Se o cartão for encontrado,
+    retorna uma resposta com os tipos de pagamento associados (crédito e débito). Caso contrário,
+    retorna uma mensagem indicando que o cartão não foi encontrado ou está inativo.
+
+    Request Body:
+        - cd_cartao (str): O número do cartão a ser verificado.
+    Responses:
+        - 200 OK: Se o cartão for encontrado, retorna uma mensagem de sucesso e os tipos de pagamento.
+            Exemplo de resposta: {
+                "msg": "Cartão encontrado",
+                "tp_credito": <booleano para habilitado como crédito>,
+                "tp_debito": <booleano para habilitado como débito>
+            }
+        - 400 Bad Request: Se o número do cartão não for fornecido no corpo da requisição.
+            Exemplo de resposta: {
+                "msg": "Numero do cartão não foi enviado"
+            }
+        - 404 Not Found: Se o cartão não for encontrado ou estiver inativo.
+            Exemplo de resposta: {
+                "msg": "Cartão não encontrado ou inativo"
+            }
+    """
+    dados = request.get_json()
+    if 'cd_cartao' not in dados or dados['cd_cartao'] is None:
+        return jsonify({'msg': 'Numero do cartão não foi enviado'}), 400
+
+    # Busca no Banco de dados se o cartão existe
     cartao = BaseCartoes.query.filter_by(cd_cartao=dados['cd_cartao']).first()
 
+    #Retorna resultado da busca
     if cartao:
-        print('Cartão válido')
-        return jsonify({'valido': True, 'mensagem': 'Cartão válido'})
+        return jsonify({'msg':'Cartão encontrado',
+                        'tp_credito':cartao.tp_credito,
+                        'tp_debito':cartao.tp_debito}),200
     else:
-        print('Cartão não encontrado ou inativo')
-        return jsonify({'valido': False, 'mensagem': 'Cartão não encontrado ou inativo'}), 404
+        return jsonify({'msg': 'Cartão não encontrado ou inativo'}), 404
 
 @app.route('/valida_senha', methods=['POST'])
 def valida_senha():
     dados = request.get_json()
-    if 'cd_cartao' not in dados["dados_pgto"] and 'cd_password' not in dados['dados_pgto']:
-        return jsonify({'erro': 'ID do cartão não foi enviado'}), 400
-    cartao = BaseCartoes.query.filter_by(cd_cartao=dados['dados_pgto']['cd_cartao']).first()
-    print(dados['dados_pgto']['cd_password'])
-    print(cartao.cd_password)
-    if (dados['dados_pgto']['cd_password'] == cartao.cd_password):
-        return jsonify({'valido': True, 'mensagem': 'Cartão válido'}), 201
+    if 'cd_cartao' not in dados or 'cd_password' not in dados:
+        return jsonify({'msg': 'Dados recebidos estão incompletos'}), 400
+    
+    # Busca no Banco de dados dados do cartão
+    cartao = BaseCartoes.query.filter_by(cd_cartao=dados['cd_cartao']).first()
+    if (dados['cd_password'] == cartao.cd_password):
+
+        return jsonify({'msg':'Pagamento aprovado'}), 200
     else:
-        return jsonify({'erro': 'Método de pagamento inválido'}), 400
+        return jsonify({'msg': 'Dados não correspondetes com a base'}), 400
+
+@app.route('/insere_pgto', methods=['POST'])
+def insere_pgto():
+    dados = request.get_json()
+    dados_trans = dados
+    dados_cartao = BaseCartoes.query.filter_by(cd_cartao=dados['cd_cartao']).first().__dict__
+
+    campos={'campos_conta':['cd_cartao','doc_transacao','cpf_titular','tp_trans','ds_transacao','credito','debito','saldo'],
+    'campos_cred':['cd_cartao','ds_transacao','parc_pgto','cpf_titular','vlr_total']}
+
+    tp_pgto = None
+    if dados_trans['tp_credito']:
+        tp_pgto = 'campos_cred'
+    else:
+        dados['debito'] = dados['vlr_total']
+        dados['doc_transacao'] = randrange(1,9999999)
+        dados['credito'] = 0
+        dados['saldo'] = 0
+        tp_pgto = 'campos_conta'
+    dados_pgto = {}
+    for campo in campos[tp_pgto]:
+        if campo == 'tp_trans':
+            dados_pgto[campo] = 'DEBITO DEBTS**PAG'
+        elif campo in dados_trans.keys():
+            dados_pgto[campo] = dados_trans.get(campo)
+        elif campo in dados_cartao.keys():
+            dados_pgto[campo] = dados_cartao.get(campo)
+    if dados_trans['tp_credito']:
+        novo_cartao = CartaoCredito(**dados_pgto)
+    elif dados_trans['tp_debito']:
+        novo_cartao = ContaCorrente(**dados_pgto)
+    db.session.add(novo_cartao)
+    db.session.commit()
+    return jsonify({'mensagem': 'Pagamento registrado com sucesso'}), 200
 
 @app.route('/valida_pgto', methods=['POST'])
 def valida_pgto():
@@ -128,37 +186,18 @@ def valida_pgto():
     else:
         return jsonify({'erro': 'Método de pagamento inválido'}), 400
 
-@app.route('/insere_pgto', methods=['POST'])
-def insere_pgto():
-    dados = request.get_json()
-    dados_trans = dados['dados_pgto']
-    dados_cartao = BaseCartoes.query.filter_by(cd_cartao=dados['dados_pgto']['cd_cartao']).first().__dict__
-    campos={'campos_conta':['cd_cartao','doc_transacao','cpf_titular','tp_trans','ds_transacao','credito','debito','saldo'],
-    'campos_cred':['cd_cartao','ds_transacao','parc_pgto','cpf_titular','vlr_total']}
-    tp_pgto = None
-    if dados_trans['tp_credito']:
-        tp_pgto = 'campos_cred'
-    else:
-        dados['dados_pgto']['debito'] = dados['dados_pgto']['vlr_total']
-        dados['dados_pgto']['doc_transacao'] = randrange(1,9999999)
-        dados['dados_pgto']['credito'] = 0
-        dados['dados_pgto']['saldo'] = 0
-        tp_pgto = 'campos_conta'
-    dados_pgto = {}
-    for campo in campos[tp_pgto]:
-        print(campo)
-        if campo in dados_trans.keys():
-            dados_pgto[campo] = dados_trans.get(campo)
-        elif campo in dados_cartao.keys():
-            dados_pgto[campo] = dados_cartao.get(campo)
-    if dados_trans['tp_credito']:
-        novo_cartao = CartaoCredito(**dados_pgto)
-    elif dados_trans['tp_debito']:
-        novo_cartao = ContaCorrente(**dados_pgto)
-    db.session.add(novo_cartao)
-    db.session.commit()
-    print('Cartão registrado com sucesso')
-    return jsonify({'mensagem': 'Pagamento registrado com sucesso'}), 201
+
+@app.route('/open_finance_request', methods=['POST'])
+def open_finance_request():
+    pass
+
+@app.route('/open_finance_refresh', methods=['POST'])
+def open_finance_refresh():
+    pass
+
+@app.route('/health', methods=['GET'])
+def health():
+    return "OK", 200
 
 if __name__ == '__main__':
     app.run(port=5001)
